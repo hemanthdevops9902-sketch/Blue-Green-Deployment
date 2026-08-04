@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: bankapp
-        image: hemanthdevops02/megaproject:blue1
+        image: hemanthdevops02/megaproject:blue
         resources:
           requests:
             memory: "256Mi"
