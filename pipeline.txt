@@ -1,0 +1,131 @@
+pipeline {
+    agent any
+    parameters{
+        choice(name: 'Deploy_Env',choices: ['blue','green'],description: 'depolyment type')
+        choice(name: 'Image',choices: ['blue','green'],description: 'docker tag')
+        booleanParam(name: 'Switch_Traffic', defaultValue: false,description: 'traffic switch')
+    }
+    environment{
+        ENV = "${params.Deploy_Env}"
+    }
+    tools{
+        jdk 'jdk17'
+        maven 'maven3'
+    }
+    stages {
+        stage('Git Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/hemanthdevops9902-sketch/Mega-Project-CI.git'
+            }
+        }
+        stage('Compile') {
+            steps {
+                sh 'mvn compile'
+            }
+        }
+        stage('Trivy Scan') {
+            steps {
+                sh 'trivy fs --format table -o report.txt .'
+            }
+        }
+        stage('Build package') {
+            steps {
+               sh 'mvn package -DskipTests=true'
+            }
+        }
+        stage('Docker Build') {
+            steps {
+               withDockerRegistry(credentialsId: 'docker-cred', url:'') {
+  sh "docker build -t hemanthdevops02/megaproject:${params.Image} ."
+}
+            }
+        }
+        stage('Trivy image Scan') {
+            steps {
+               sh "trivy image --format table -o image.txt hemanthdevops02/megaproject:${params.Image}"
+            }
+        }
+        stage('Docker push') {
+            steps {
+               withDockerRegistry(credentialsId: 'docker-cred',url:'') {
+  sh "docker push hemanthdevops02/megaproject:${params.Image}"
+}
+            }
+        }
+stage('manifest-update') {
+    steps {
+        cleanWs()
+        script {
+            withCredentials([gitUsernamePassword(credentialsId: 'git-cred', gitToolName: 'Default')]) {
+
+                sh """
+                git clone https://github.com/hemanthdevops9902-sketch/Blue-Green-Deployment.git
+
+                cd Blue-Green-Deployment
+
+                if [ "${params.Deploy_Env}" = "blue" ]; then
+                    sed -i 's|image: hemanthdevops02/megaproject:.*|image: hemanthdevops02/megaproject:${params.Image}|g' bankapp-blue.yaml
+                else
+                    sed -i 's|image: hemanthdevops02/megaproject:.*|image: hemanthdevops02/megaproject:${params.Image}|g' bankapp-green.yaml
+                fi
+
+                git config user.name "hemanthdevops9902-sketch"
+                git config user.email "your-email@example.com"
+
+                git add .
+                git commit -m "Updated image to ${params.Image}" || echo "No changes to commit"
+                git push origin main
+                """
+            }
+        }
+    }
+}
+        stage('Create svc') {
+            steps {
+                script{
+                    withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-cred', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://C981F44FB677815A94BE802BC695FE5E.gr7.ap-south-1.eks.amazonaws.com') {
+    sh """ 
+    if ! kubectl get svc bankapp-service -n webapps; then
+    kubectl apply -f Blue-Green-Deployment/storageclass.yaml
+kubectl apply -f Blue-Green-Deployment/pvc.yaml
+kubectl apply -f Blue-Green-Deployment/secret.yaml
+kubectl apply -f Blue-Green-Deployment/config.yaml
+kubectl apply -f Blue-Green-Deployment/mysql-svc.yaml
+kubectl apply -f Blue-Green-Deployment/mysql-depl.yaml
+kubectl apply -f Blue-Green-Deployment/bankapp-svc.yaml
+    fi 
+    if [ "${params.Deploy_Env}" = "blue" ]; then
+    kubectl apply -f Blue-Green-Deployment/bankapp-blue.yaml
+    fi
+    
+    if [ "${params.Deploy_Env}" = "green" ]; then
+    kubectl apply -f Blue-Green-Deployment/bankapp-green.yaml
+    fi
+    """
+}
+                }
+            }
+        }
+       stage('Traffic Change') {
+    when {
+        expression {
+            return params.Switch_Traffic
+        }
+    }
+    steps {
+        withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-cred', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://C981F44FB677815A94BE802BC695FE5E.gr7.ap-south-1.eks.amazonaws.com') {
+        sh """
+            kubectl patch service bankapp-service \
+            -p '{"spec":{"selector":{"app":"bankapp","version":"${params.Image}"}}}'
+        """
+    }
+    }
+}
+        stage('Hello') {
+            steps {
+                echo 'Hello World'
+            }
+        }
+        
+    }
+}
